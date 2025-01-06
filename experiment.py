@@ -148,8 +148,21 @@ def calc_retrieval_lambda_2(val_data, beta, relevance_level = 1):
             break
         pre_lambda_val = lambda_val
         delta /= 2
-    return lambda_val 
-       
+    return lambda_val        
+
+# evenly split the validation data into val_data_1 and val_data_2
+# val_data is a dict, the format is zipped_data[id] = (l1_data[id], l2_data[id])
+def split_val_data(val_data):
+    val_ids = list(val_data.keys())
+    random.shuffle(val_ids)
+    split_index = len(val_ids) // 2
+    val_ids_1 = val_ids[:split_index]
+    val_ids_2 = val_ids[split_index:]
+
+    val_data_1 = {id: val_data[id] for id in val_ids_1}
+    val_data_2 = {id: val_data[id] for id in val_ids_2}
+    return (val_data_1, val_data_2)
+
 
 def main():
     # Create the argument parser
@@ -174,12 +187,26 @@ def main():
         default=False,
         help="Indicate whether the scores should be normalized. Default is False."
     )
+    parser.add_argument(
+        "--num_iteration",
+        action="store_true",
+        default=10,
+        help="How many time we should replicate the experiment"
+    )
+    parser.add_argument(
+        "--is_data_split",
+        action="store_true",
+        default=False,
+        help="Indicate whether we use the data split method"
+    )
 
     # Parse the arguments
     args = parser.parse_args()
     l1_file_name = args.l1_file_name
     l2_file_name = args.l2_file_name
     should_normalize_score = args.should_normalize_score
+    iteration_times = args.num_iteration
+    is_data_split = args.is_data_split
 
     # Load and process the data
     l1_data, _ = load_data(l1_file_name)
@@ -194,7 +221,7 @@ def main():
     # val_zipped_data = zip_data(l1_data, l2_data, val_ids)
     # test_zipped_data = zip_data(l1_data, l2_data, test_ids)        
 
-    iteration_times = 2
+    # iteration_times = 10 
     level = 1
     precision = 0.0005
     num_lambda_steps = 3
@@ -211,15 +238,15 @@ def main():
             val_zipped_data = zip_data(l1_data, l2_data, val_ids)
             test_zipped_data = zip_data(l1_data, l2_data, test_ids)
 
-            max_l1_lambda_1 = calc_retrieval_lambda(val_zipped_data, alpha, 1)
-            max_l1_lambda_2 = calc_retrieval_lambda_2(val_zipped_data, beta, 1)
+            if is_data_split:   # for data split method, split it evenly into part 1 and part 2
+                val_zipped_data_1, val_zipped_data_2 = split_val_data(val_zipped_data)
+            else:               # for non-split method, the two parts are the same, both are val_zipped data
+                val_zipped_data_1, val_zipped_data_2 = val_zipped_data
+
+            max_l1_lambda_1 = calc_retrieval_lambda(val_zipped_data_1, alpha, 1)
+            max_l1_lambda_2 = calc_retrieval_lambda_2(val_zipped_data_1, beta, 1)
             max_l1_lambda = min(max_l1_lambda_1, max_l1_lambda_2)
-            # print(max_l1_lambda_1)
-            # print(max_l1_lambda_2)
-            # print(max_l1_lambda)
             
-            # max_l1_lambda, _ = get_max_retrieval_lambda(val_zipped_data, beta, level)
-            # print(max_l1_lambda)
             lambda_grid = np.linspace(0, max_l1_lambda, num=num_lambda_steps)
             print(lambda_grid)
             best_prediction_size = 10000000
@@ -230,11 +257,11 @@ def main():
                 pre_gamma_val = 0
                 l2_gamma_val = 0.5
                 delta = abs(pre_gamma_val  - l2_gamma_val) 
-                M = len(val_zipped_data.keys())
+                M = len(val_zipped_data_2.keys())
                 threshold = (M + 1) * beta - 1
                 while delta >= precision:
                     total_loss = 0 
-                    for query_id, (l1_docs_for_query, l2_docs_for_query) in val_zipped_data.items():
+                    for query_id, (l1_docs_for_query, l2_docs_for_query) in val_zipped_data_2.items():
                         l1_fetched_docs = set([doc[0] for doc in l1_docs_for_query if doc[2] >= l1_lambda_val])
                         l2_retained_docs = set([doc[0] for doc in l2_docs_for_query if doc[2] >= l2_gamma_val and doc[0] in l1_fetched_docs])
                         l2_ground_truth_docs = set([doc[0] for doc in l2_docs_for_query if doc[1] >= level])
