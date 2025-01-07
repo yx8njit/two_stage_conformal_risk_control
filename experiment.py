@@ -199,6 +199,12 @@ def main():
         default=False,
         help="Indicate whether we use the data split method"
     )
+    parser.add_argument(
+        "--size_weight",
+        action="store_true",
+        default=0.5,
+        help="Weight between the two stages when calculating the total prediction size, i.e., sz = w*sz_1 + (1-w)*sz_2"
+    )
 
     # Parse the arguments
     args = parser.parse_args()
@@ -207,6 +213,7 @@ def main():
     should_normalize_score = args.should_normalize_score
     iteration_times = args.num_iteration
     is_data_split = args.is_data_split
+    size_weight = args.size_weight
 
     # Load and process the data
     l1_data, _ = load_data(l1_file_name)
@@ -218,20 +225,14 @@ def main():
     if should_normalize_score:
         l1_data, l2_data = normalize_score(l1_data, l2_data)
 
-    # val_zipped_data = zip_data(l1_data, l2_data, val_ids)
-    # test_zipped_data = zip_data(l1_data, l2_data, test_ids)        
-
-    # iteration_times = 10 
     level = 1
     precision = 0.0005
     num_lambda_steps = 3
 
     alpha = 0.3
-
     summary_by_beta = {}
-
     # for beta in [0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.4, 0.5]:
-    for beta in [0.2]:
+    for beta in [0.1, 0.2]:
         # print(beta)
         for iteration in range(iteration_times):     
             val_ids, test_ids = split_query_ids(l1_data, 0.5)
@@ -241,14 +242,14 @@ def main():
             if is_data_split:   # for data split method, split it evenly into part 1 and part 2
                 val_zipped_data_1, val_zipped_data_2 = split_val_data(val_zipped_data)
             else:               # for non-split method, the two parts are the same, both are val_zipped data
-                val_zipped_data_1, val_zipped_data_2 = val_zipped_data
+                val_zipped_data_1, val_zipped_data_2 = val_zipped_data, val_zipped_data
 
             max_l1_lambda_1 = calc_retrieval_lambda(val_zipped_data_1, alpha, 1)
             max_l1_lambda_2 = calc_retrieval_lambda_2(val_zipped_data_1, beta, 1)
             max_l1_lambda = min(max_l1_lambda_1, max_l1_lambda_2)
             
             lambda_grid = np.linspace(0, max_l1_lambda, num=num_lambda_steps)
-            print(lambda_grid)
+            # print(lambda_grid)
             best_prediction_size = 10000000
             best_l1_size, best_l2_size = 0, 0
             best_alpha, best_beta = 0, 0
@@ -292,35 +293,52 @@ def main():
                     l2_risk_for_query = calc_l2_risk_for_docs(l2_retained_docs, l2_ground_truth_docs)
                     total_l2_loss += l2_risk_for_query
         
-                avg_l1_loss = (total_l1_loss + 1)/(M_test + 1)
-                avg_l2_loss = (total_l2_loss + 1)/(M_test + 1)
-                avg_l1_size = total_l1_size / M_test
-                avg_l2_size = total_l2_size / M_test
-                prediction_size = avg_l1_size + avg_l2_size
+                cur_l1_loss = (total_l1_loss + 1)/(M_test + 1) # note to myself: should this be total_l1_loss /M_test ?
+                cur_l2_loss = (total_l2_loss + 1)/(M_test + 1)
+                cur_l1_size = total_l1_size / M_test
+                cur_l2_size = total_l2_size / M_test
+                cur_prediction_size = size_weight * cur_l1_size + (1-size_weight) * cur_l2_size
                 # print('{}:{}:{}:{}:{}:{}:{}'.format(beta,l1_lambda_val, avg_l1_size+avg_l2_size, avg_l1_size, avg_l2_size, avg_l1_loss, avg_l2_loss))
-                if prediction_size < best_prediction_size:
-                    best_prediction_size = prediction_size
-                    best_l1_size = avg_l1_size
-                    best_l2_size = avg_l2_size
-                    best_alpha = avg_l1_loss
-                    best_beta = avg_l2_loss
+                if cur_prediction_size < best_prediction_size:
+                    best_prediction_size = cur_prediction_size
+                    best_l1_size = cur_l1_size
+                    best_l2_size = cur_l2_size
+                    best_l1_loss = cur_l1_loss
+                    best_l2_loss = cur_l2_loss
                     
-            print('{}:{}:{}:{}:{}:{}'.format(beta, best_prediction_size, best_l1_size, best_l2_size, best_alpha, best_beta))
+            print('{}:{}:{}:{}:{}:{}'.format(beta, best_prediction_size, best_l1_size, best_l2_size, best_l1_loss, best_l2_loss))
             if beta not in summary_by_beta.keys():
                 summary_by_beta[beta] = list()
-            summary_by_beta[beta].append((best_prediction_size, best_l1_size, best_l2_size, best_alpha, best_beta))
+            summary_by_beta[beta].append((best_prediction_size, best_l1_size, best_l2_size, best_l1_loss, best_l2_loss))
 
     for beta, results in summary_by_beta.items():
         iteration_times = len(results)
-        total_pred_size, total_l1_size, total_l2_size, total_l1_loss, total_l2_loss = 0, 0, 0, 0, 0
+        prediction_sizes, l1_sizes, l2_sizes, l1_losses, l2_losses = [], [], [], [], []
         for tuple in results:
-            total_pred_size += tuple[0]
-            total_l1_size += tuple[1]
-            total_l2_size += tuple[2]
-            total_l1_loss += tuple[3]
-            total_l2_loss += tuple[4]
-        print('{}:{}:{}:{}:{}:{}'.format(beta, total_pred_size / iteration_times, total_l1_size / iteration_times,
-                                    total_l2_size / iteration_times, total_l1_loss / iteration_times, total_l2_loss / iteration_times))            
+            prediction_sizes.append(tuple[0])
+            l1_sizes.append(tuple[1])
+            l2_sizes.append(tuple[2])
+            l1_losses.append(tuple[3])
+            l2_losses.append(tuple[4])
+
+        # Convert lists to numpy arrays for easy computation
+        prediction_sizes = np.array(prediction_sizes)
+        l1_sizes = np.array(l1_sizes)
+        l2_sizes = np.array(l2_sizes)
+        l1_losses = np.array(l1_losses)
+        l2_losses = np.array(l2_losses)            
+        
+        summaries = {
+            "prediction_sizes": {"mean": np.mean(prediction_sizes), "std": np.std(prediction_sizes)},
+            "l1_sizes": {"mean": np.mean(l1_sizes), "std": np.std(l1_sizes)},
+            "l2_sizes": {"mean": np.mean(l2_sizes), "std": np.std(l2_sizes)},
+            "l1_losses": {"mean": np.mean(l1_losses), "std": np.std(l1_losses)},
+            "l2_losses": {"mean": np.mean(l2_losses), "std": np.std(l2_losses)},
+        }
+        # Print the summaries
+        print(f"===beta:{beta}")
+        for key, stats in summaries.items():
+            print(f"{key}: mean = {stats['mean']:.4f}, std = {stats['std']:.4f}")    
 
 if __name__ == "__main__":
     main()
